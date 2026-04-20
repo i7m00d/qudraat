@@ -1,6 +1,10 @@
 const API_BASE = "https://api.dalilk4ielts.com";
 const STORAGE_KEY = "qudrat-banks-v1";
-const QUESTION_SELECT = "id,classification,resource,question,choices,level,video_url,note,release_id";
+const QUESTION_CACHE_KEY = "qudrat-question-cache-v1";
+const QUESTION_SELECT = "id,classification,question,choices";
+const QUESTION_CACHE_LIMIT = 360;
+const FETCH_CONCURRENCY = 6;
+const FETCH_TIMEOUT_MS = 12000;
 
 const SECTION_LABELS = {
   verbal: "لفظي",
@@ -16,6 +20,7 @@ const DISTRIBUTION_LABELS = {
 
 const state = {
   db: loadDb(),
+  questionCache: loadQuestionCache(),
   catalogs: {
     verbal: null,
     quant: null,
@@ -78,6 +83,28 @@ function loadDb() {
   }
 }
 
+function loadQuestionCache() {
+  try {
+    const raw = localStorage.getItem(QUESTION_CACHE_KEY);
+    if (!raw) {
+      return {
+        verbal: {},
+        quant: {},
+      };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      verbal: typeof parsed?.verbal === "object" && parsed.verbal ? parsed.verbal : {},
+      quant: typeof parsed?.quant === "object" && parsed.quant ? parsed.quant : {},
+    };
+  } catch (_error) {
+    return {
+      verbal: {},
+      quant: {},
+    };
+  }
+}
+
 function normalizeBankRecord(bank) {
   return {
     id: String(bank.id || uid("bank")),
@@ -115,6 +142,65 @@ function normalizeBankRecord(bank) {
 
 function persistDb() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
+}
+
+function persistQuestionCache() {
+  try {
+    localStorage.setItem(QUESTION_CACHE_KEY, JSON.stringify(state.questionCache));
+  } catch (_error) {}
+}
+
+function cacheQuestion(section, question) {
+  const key = String(question?.sourceQuestionId || "");
+  if (!key || (section !== "verbal" && section !== "quant")) {
+    return;
+  }
+
+  const bucket = state.questionCache[section];
+  bucket[key] = {
+    ...question,
+    cachedAt: Date.now(),
+  };
+
+  const ids = Object.keys(bucket);
+  if (ids.length > QUESTION_CACHE_LIMIT) {
+    ids
+      .sort((a, b) => {
+        const ta = Number(bucket[a]?.cachedAt || 0);
+        const tb = Number(bucket[b]?.cachedAt || 0);
+        return ta - tb;
+      })
+      .slice(0, ids.length - QUESTION_CACHE_LIMIT)
+      .forEach((id) => {
+        delete bucket[id];
+      });
+  }
+}
+
+function getCachedQuestions(section, classification, needCount, selectedIds) {
+  if (section !== "verbal" && section !== "quant") {
+    return [];
+  }
+
+  const bucket = Object.values(state.questionCache[section] || {});
+  if (bucket.length === 0) {
+    return [];
+  }
+
+  const filtered = bucket
+    .filter((question) => {
+      const idKey = `${section}:${question.sourceQuestionId}`;
+      if (selectedIds.has(idKey)) {
+        return false;
+      }
+      if (!classification) {
+        return true;
+      }
+      return normalizeToken(question.classification) === normalizeToken(classification);
+    })
+    .sort((a, b) => Number(b.cachedAt || 0) - Number(a.cachedAt || 0));
+
+  return filtered.slice(0, needCount).map((item) => ({ ...item }));
 }
 
 function uid(prefix) {
@@ -704,17 +790,50 @@ async function createBank() {
       quant: [],
     };
 
-    for (const item of plan) {
-      state.ui.createStatus = `جاري سحب ${item.target} سؤال (${SECTION_LABELS[item.section]})...`;
-      render();
+    const sectionProgress = {};
+    let lastStatusRenderAt = 0;
 
-      const questions = await collectSectionQuestions(item, (current, targetValue, classification) => {
-        const tail = classification ? ` - ${classification}` : "";
-        state.ui.createStatus = `(${SECTION_LABELS[item.section]}) ${current}/${targetValue}${tail}`;
-        render();
+    const syncStatus = (force) => {
+      const now = Date.now();
+      if (!force && now - lastStatusRenderAt < 120) {
+        return;
+      }
+      lastStatusRenderAt = now;
+
+      const parts = plan.map((item) => {
+        const progress = sectionProgress[item.section];
+        if (!progress) {
+          return `${SECTION_LABELS[item.section]} 0/${item.target}`;
+        }
+        return `${SECTION_LABELS[item.section]} ${progress.current}/${progress.total}`;
       });
 
-      bucket[item.section] = questions;
+      state.ui.createStatus = `جاري السحب: ${parts.join(" | ")}`;
+      render();
+    };
+
+    const results = await Promise.all(
+      plan.map(async (item) => {
+        const questions = await collectSectionQuestions(item, (current, targetValue, classification) => {
+          sectionProgress[item.section] = {
+            current,
+            total: targetValue,
+            classification,
+          };
+          syncStatus(false);
+        });
+        sectionProgress[item.section] = {
+          current: item.target,
+          total: item.target,
+          classification: "",
+        };
+        syncStatus(true);
+        return [item.section, questions];
+      })
+    );
+
+    for (const [section, questions] of results) {
+      bucket[section] = questions;
     }
 
     const merged = mergeQuestions(bucket.verbal, bucket.quant, subjectMode, count);
@@ -754,6 +873,8 @@ async function createBank() {
     state.ui.createStatus = "";
     state.ui.createError = error instanceof Error ? error.message : "تعذر إنشاء البنك.";
     render();
+  } finally {
+    persistQuestionCache();
   }
 }
 
@@ -770,6 +891,32 @@ function buildClassificationQueue(classifications, target, mode) {
   return unique;
 }
 
+function buildClassificationTargets(queue, target, distributionMode) {
+  if (distributionMode === "random" || queue.length === 0) {
+    return [{ classification: null, target }];
+  }
+
+  if (queue.length >= target) {
+    return shuffle([...queue])
+      .slice(0, target)
+      .map((classification) => ({ classification, target: 1 }));
+  }
+
+  const base = Math.floor(target / queue.length);
+  let rest = target % queue.length;
+
+  return queue.map((classification) => {
+    const extra = rest > 0 ? 1 : 0;
+    if (rest > 0) {
+      rest -= 1;
+    }
+    return {
+      classification,
+      target: base + extra,
+    };
+  });
+}
+
 async function collectSectionQuestions(plan, onProgress) {
   const { section, target, distributionMode, classifications } = plan;
   const queue = buildClassificationQueue(classifications, target, distributionMode);
@@ -778,43 +925,65 @@ async function collectSectionQuestions(plan, onProgress) {
     throw new Error(`لا توجد فقرات متاحة حاليًا لقسم ${SECTION_LABELS[section]}.`);
   }
 
+  const groups = buildClassificationTargets(queue, target, distributionMode).map((group) => ({
+    ...group,
+    current: 0,
+  }));
+
   const selected = [];
   const seen = new Set();
 
-  const maxAttempts = Math.max(120, target * 35);
-  let requestCount = 0;
-  let pointer = 0;
-
-  while (selected.length < target && requestCount < maxAttempts) {
-    requestCount += 1;
-    const classification = distributionMode === "random" ? null : queue[pointer % queue.length];
-    pointer += 1;
-
-    const rawQuestion = await fetchSingleQuestion(section, classification);
-    if (!rawQuestion) {
-      continue;
+  for (const group of groups) {
+    const cached = getCachedQuestions(section, group.classification, group.target, seen);
+    for (const question of cached) {
+      const key = `${section}:${question.sourceQuestionId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      selected.push(question);
+      group.current += 1;
+      onProgress(selected.length, target, group.classification || "من الكاش");
+      if (selected.length >= target) {
+        break;
+      }
     }
+    if (selected.length >= target) {
+      break;
+    }
+  }
 
-    const parsed = normalizeQuestion(rawQuestion, section);
+  const tasks = [];
+  for (const group of groups) {
+    const missing = Math.max(0, group.target - group.current);
+    for (let i = 0; i < missing; i += 1) {
+      tasks.push({ classification: group.classification });
+    }
+  }
+
+  shuffle(tasks);
+
+  const takeQuestion = (parsed, classificationLabel) => {
     if (!parsed || parsed.choices.length === 0) {
-      continue;
+      return false;
     }
 
     const key = `${section}:${parsed.sourceQuestionId}`;
     if (seen.has(key)) {
-      continue;
+      return false;
     }
 
     seen.add(key);
     selected.push(parsed);
-    onProgress(selected.length, target, classification);
-  }
+    cacheQuestion(section, parsed);
+    onProgress(selected.length, target, classificationLabel || null);
+    return true;
+  };
 
-  if (selected.length < target && distributionMode !== "random") {
-    let fallback = 0;
-    while (selected.length < target && fallback < target * 30) {
-      fallback += 1;
-      const rawQuestion = await fetchSingleQuestion(section, null);
+  const fetchByTask = async (classification) => {
+    const maxRetries = classification ? 12 : 10;
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+      const rawQuestion = await fetchSingleQuestion(section, classification);
       if (!rawQuestion) {
         continue;
       }
@@ -824,14 +993,60 @@ async function collectSectionQuestions(plan, onProgress) {
         continue;
       }
 
-      const key = `${section}:${parsed.sourceQuestionId}`;
-      if (seen.has(key)) {
+      if (classification && normalizeToken(parsed.classification) !== normalizeToken(classification)) {
+        cacheQuestion(section, parsed);
         continue;
       }
 
-      seen.add(key);
-      selected.push(parsed);
-      onProgress(selected.length, target, "احتياطي");
+      if (takeQuestion(parsed, classification)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (tasks.length > 0) {
+    let pointer = 0;
+    const failedTasks = [];
+    const workerCount = Math.min(FETCH_CONCURRENCY, tasks.length);
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (pointer < tasks.length && selected.length < target) {
+          const taskIndex = pointer;
+          pointer += 1;
+          const task = tasks[taskIndex];
+          const done = await fetchByTask(task.classification);
+          if (!done) {
+            failedTasks.push(task);
+          }
+        }
+      })
+    );
+
+    if (selected.length < target && failedTasks.length > 0) {
+      for (const task of failedTasks) {
+        if (selected.length >= target) {
+          break;
+        }
+        await fetchByTask(task.classification);
+      }
+    }
+  }
+
+  if (selected.length < target) {
+    const fallbackMax = Math.max(30, (target - selected.length) * 14);
+    let fallback = 0;
+    while (selected.length < target && fallback < fallbackMax) {
+      fallback += 1;
+      const rawQuestion = await fetchSingleQuestion(section, null);
+      if (!rawQuestion) {
+        continue;
+      }
+      const parsed = normalizeQuestion(rawQuestion, section);
+      if (takeQuestion(parsed, "احتياطي")) {
+        continue;
+      }
     }
   }
 
@@ -839,25 +1054,29 @@ async function collectSectionQuestions(plan, onProgress) {
     throw new Error(`تعذر جمع ${target} سؤال كافي لقسم ${SECTION_LABELS[section]}.`);
   }
 
-  return selected;
+  return shuffle(selected).slice(0, target);
 }
 
 async function fetchSingleQuestion(section, classification) {
   const url = new URL(`${API_BASE}/qs-bank/${section}/index.php`);
   url.searchParams.set("select", QUESTION_SELECT);
-  url.searchParams.set("with", "shortcuts");
   url.searchParams.set("random", "1");
   url.searchParams.set("status", "not:draft");
   if (classification) {
     url.searchParams.set("classification", classification);
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   try {
     const response = await fetch(url.toString(), {
       method: "GET",
       headers: {
-        "Content-Type": "application/json",
+        Accept: "application/json",
       },
+      cache: "no-store",
+      signal: controller.signal,
     });
     if (!response.ok) {
       return null;
@@ -869,6 +1088,8 @@ async function fetchSingleQuestion(section, classification) {
     return payload.data[0];
   } catch (_error) {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
