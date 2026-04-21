@@ -1099,12 +1099,17 @@ function normalizeQuestion(raw, section) {
     return null;
   }
 
+  const questionText = toText(raw.question);
+  // استخراج القطعة من الحقول المختلفة
+  const passage = extractPassage(questionText, raw.resource, raw.note, raw.classification);
+
   return {
     source: section,
     sourceQuestionId: raw.id,
     classification: toText(raw.classification),
     resource: toText(raw.resource),
-    question: toText(raw.question),
+    question: questionText,
+    passage: passage, // إضافة القطعة القرائية
     level: toText(raw.level),
     note: toText(raw.note),
     videoUrl: raw.video_url ? String(raw.video_url) : "",
@@ -1112,6 +1117,31 @@ function normalizeQuestion(raw, section) {
     choices: parsedChoices.options,
     correctKey: resolveCorrectKey(parsedChoices.correct, parsedChoices.options),
   };
+}
+
+function extractPassage(question, resource, note, classification) {
+  // محاولة استخراج القطعة من الحقول المختلفة
+  // الأولوية: resource، ثم note، ثم الجزء الأول من السؤال
+
+  if (resource && resource.trim().length > 30) {
+    return resource.trim();
+  }
+
+  if (note && note.trim().length > 30) {
+    return note.trim();
+  }
+
+  // إذا كان السؤال طويل، نفترض أن الجزء الأول هو القطعة
+  if (question && question.length > 150) {
+    // محاولة فصل القطعة عن السؤال
+    const lines = question.split('\n');
+    if (lines.length > 1) {
+      // الجزء الأول يكون القطعة
+      return lines.slice(0, -1).join('\n').trim();
+    }
+  }
+
+  return resource || note || "";
 }
 
 function parseChoices(choicesRaw) {
