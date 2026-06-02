@@ -415,6 +415,34 @@ select:focus {
   font-size: 1.03rem;
 }
 
+.passage-box {
+  background: rgba(29, 122, 105, 0.06);
+  border: 1px solid rgba(29, 122, 105, 0.18);
+  border-right: 3px solid var(--brand);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.passage-label {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--brand-strong);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.passage-text {
+  font-size: 0.97rem;
+  line-height: 1.85;
+  color: var(--text);
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
 .choices {
   display: grid;
   gap: 8px;

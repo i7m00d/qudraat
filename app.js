@@ -1590,6 +1590,7 @@ function renderAttemptView() {
           </div>
 
           <article class="question-card">
+            ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
             <p class="question-text">${asMultiline(question.question)}</p>
             <div class="choices">
               ${question.choices
@@ -1731,6 +1732,7 @@ function renderReviewItem(question, attempt, index) {
         <span class="pill pill--muted">${SECTION_LABELS[question.source]}</span>
         <span class="pill ${correct ? "" : "pill--warm"}">${correct ? "صحيح" : "غير صحيح"}</span>
       </div>
+      ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
       <p class="question-text">${asMultiline(question.question)}</p>
       <p class="hint">إجابتك: ${answerChoice ? `${escapeHtml(answerChoice.label)} - ${escapeHtml(answerChoice.text)}` : "لم تتم الإجابة"}</p>
       <p class="hint">الصحيح: ${correctChoice ? `${escapeHtml(correctChoice.label)} - ${escapeHtml(correctChoice.text)}` : "غير متوفر"}</p>
