@@ -1589,23 +1589,25 @@ function renderAttemptView() {
             <div class="progress"><span style="width:${progress}%;"></span></div>
           </div>
 
-          <article class="question-card">
-            ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
-            <p class="question-text">${asMultiline(question.question)}</p>
-            <div class="choices">
-              ${question.choices
-                .map(
-                  (choice) => `
-                <button class="choice ${normalizeToken(answerKey) === normalizeToken(choice.key) ? "choice--selected" : ""}" data-action="attempt-select" data-key="${
-                    choice.key
-                  }">
-                  <span class="choice__dot">${escapeHtml(choice.label || choice.key.toUpperCase())}</span>
-                  <span>${asMultiline(choice.text)}</span>
-                </button>
-              `
-                )
-                .join("")}
+          <article class="question-card ${question.passage ? "question-card--split" : ""}">
+            <div class="question-main">
+              <p class="question-text">${asMultiline(question.question)}</p>
+              <div class="choices">
+                ${question.choices
+                  .map(
+                    (choice) => `
+                  <button class="choice ${normalizeToken(answerKey) === normalizeToken(choice.key) ? "choice--selected" : ""}" data-action="attempt-select" data-key="${
+                      choice.key
+                    }">
+                    <span class="choice__dot">${escapeHtml(choice.label || choice.key.toUpperCase())}</span>
+                    <span>${asMultiline(choice.text)}</span>
+                  </button>
+                `
+                  )
+                  .join("")}
+              </div>
             </div>
+            ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
           </article>
 
           <div class="row row--middle">
