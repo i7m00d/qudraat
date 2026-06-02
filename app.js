@@ -1,6 +1,6 @@
 const API_BASE = "https://api.dalilk4ielts.com";
 const STORAGE_KEY = "qudrat-banks-v1";
-const QUESTION_CACHE_KEY = "qudrat-question-cache-v1";
+const QUESTION_CACHE_KEY = "qudrat-question-cache-v2";
 const QUESTION_SELECT = "id,classification,question,choices,resource,note";
 const QUESTION_CACHE_LIMIT = 360;
 const FETCH_CONCURRENCY = 6;
@@ -141,7 +141,18 @@ function normalizeBankRecord(bank) {
 }
 
 function persistDb() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
+  } catch (error) {
+    // عند امتلاء التخزين: نفرّغ كاش الأسئلة المؤقت ونعيد المحاولة
+    try {
+      state.questionCache = { verbal: {}, quant: {} };
+      localStorage.removeItem(QUESTION_CACHE_KEY);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.db));
+    } catch (_again) {
+      console.error("تعذر حفظ البنوك: مساحة التخزين ممتلئة", error);
+    }
+  }
 }
 
 function persistQuestionCache() {
@@ -200,7 +211,14 @@ function getCachedQuestions(section, classification, needCount, selectedIds) {
     })
     .sort((a, b) => Number(b.cachedAt || 0) - Number(a.cachedAt || 0));
 
-  return filtered.slice(0, needCount).map((item) => ({ ...item }));
+  // حماية دفاعية: إعادة اشتقاق القطعة لأي سؤال مخزّن لا يحملها
+  return filtered.slice(0, needCount).map((item) => {
+    const copy = { ...item };
+    if (!copy.passage) {
+      copy.passage = extractPassage(copy.question, copy.resource, copy.note);
+    }
+    return copy;
+  });
 }
 
 function uid(prefix) {
