@@ -415,26 +415,6 @@ select:focus {
   font-size: 1.03rem;
 }
 
-.question-card--split {
-  display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  gap: 16px;
-}
-
-.question-card--split .question-main {
-  flex: 1 1 50%;
-  min-width: 0;
-  display: grid;
-  gap: 12px;
-  align-content: start;
-}
-
-.question-card--split .passage-box {
-  flex: 1 1 50%;
-  min-width: 0;
-}
-
 .passage-box {
   background: rgba(29, 122, 105, 0.06);
   border: 1px solid rgba(29, 122, 105, 0.18);
@@ -446,10 +426,10 @@ select:focus {
   align-content: start;
 }
 
-@media (max-width: 720px) {
-  .question-card--split {
-    flex-direction: column;
-  }
+.passage-box--full {
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
 .passage-label {

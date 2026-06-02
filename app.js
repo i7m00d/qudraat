@@ -1563,9 +1563,11 @@ function renderAttemptView() {
 
   const split = splitCount(bank.config.questionCount, bank.config.subjectMode, bank.config.verbalRatio);
 
+  const hasPassage = Boolean(question.passage);
+
   return `
     <section class="grid">
-      <article class="card col-8">
+      <article class="card ${hasPassage ? "col-8" : "col-12"}">
         <div class="card__head">
           <div>
             <h2 class="card__title">${escapeHtml(bank.name)}</h2>
@@ -1589,25 +1591,22 @@ function renderAttemptView() {
             <div class="progress"><span style="width:${progress}%;"></span></div>
           </div>
 
-          <article class="question-card ${question.passage ? "question-card--split" : ""}">
-            <div class="question-main">
-              <p class="question-text">${asMultiline(question.question)}</p>
-              <div class="choices">
-                ${question.choices
-                  .map(
-                    (choice) => `
-                  <button class="choice ${normalizeToken(answerKey) === normalizeToken(choice.key) ? "choice--selected" : ""}" data-action="attempt-select" data-key="${
-                      choice.key
-                    }">
-                    <span class="choice__dot">${escapeHtml(choice.label || choice.key.toUpperCase())}</span>
-                    <span>${asMultiline(choice.text)}</span>
-                  </button>
-                `
-                  )
-                  .join("")}
-              </div>
+          <article class="question-card">
+            <p class="question-text">${asMultiline(question.question)}</p>
+            <div class="choices">
+              ${question.choices
+                .map(
+                  (choice) => `
+                <button class="choice ${normalizeToken(answerKey) === normalizeToken(choice.key) ? "choice--selected" : ""}" data-action="attempt-select" data-key="${
+                    choice.key
+                  }">
+                  <span class="choice__dot">${escapeHtml(choice.label || choice.key.toUpperCase())}</span>
+                  <span>${asMultiline(choice.text)}</span>
+                </button>
+              `
+                )
+                .join("")}
             </div>
-            ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
           </article>
 
           <div class="row row--middle">
@@ -1618,7 +1617,24 @@ function renderAttemptView() {
         </div>
       </article>
 
+      ${
+        hasPassage
+          ? `
       <aside class="card col-4">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title">القطعة القرائية</h3>
+            <p class="card__sub">اقرأ القطعة ثم أجب عن السؤال</p>
+          </div>
+        </div>
+        <div class="passage-box passage-box--full">
+          <div class="passage-text">${asMultiline(question.passage)}</div>
+        </div>
+      </aside>`
+          : ""
+      }
+
+      <aside class="card col-12">
         <div class="card__head">
           <div>
             <h3 class="card__title">التنقل السريع</h3>
