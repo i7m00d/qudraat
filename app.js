@@ -1100,8 +1100,8 @@ function normalizeQuestion(raw, section) {
   }
 
   const questionText = toText(raw.question);
-  // استخراج القطعة من الحقول المختلفة
-  const passage = extractPassage(questionText, raw.resource, raw.note, raw.classification);
+  // استخراج القطعة القرائية من الحقول المختلفة
+  const passage = extractPassage(questionText, raw.resource, raw.note);
 
   return {
     source: section,
@@ -1119,29 +1119,21 @@ function normalizeQuestion(raw, section) {
   };
 }
 
-function extractPassage(question, resource, note, classification) {
-  // محاولة استخراج القطعة من الحقول المختلفة
-  // الأولوية: resource، ثم note، ثم الجزء الأول من السؤال
+function extractPassage(question, resource, note) {
+  // القطعة القرائية تأتي عادة في حقل resource، وأحياناً note
+  // الأولوية: resource ثم note، مع تنظيف النص
 
-  if (resource && resource.trim().length > 30) {
-    return resource.trim();
+  const cleanResource = normalizeRichText(resource);
+  if (cleanResource && cleanResource.length > 25) {
+    return cleanResource;
   }
 
-  if (note && note.trim().length > 30) {
-    return note.trim();
+  const cleanNote = normalizeRichText(note);
+  if (cleanNote && cleanNote.length > 25) {
+    return cleanNote;
   }
 
-  // إذا كان السؤال طويل، نفترض أن الجزء الأول هو القطعة
-  if (question && question.length > 150) {
-    // محاولة فصل القطعة عن السؤال
-    const lines = question.split('\n');
-    if (lines.length > 1) {
-      // الجزء الأول يكون القطعة
-      return lines.slice(0, -1).join('\n').trim();
-    }
-  }
-
-  return resource || note || "";
+  return "";
 }
 
 function parseChoices(choicesRaw) {
@@ -1566,12 +1558,12 @@ function renderAttemptView() {
   const hasPassage = Boolean(question.passage);
 
   return `
-    <section class="grid">
-      <article class="card ${hasPassage ? "col-8" : "col-12"}">
+    <section class="grid solve-grid">
+      <article class="card solve-card ${hasPassage ? "col-7" : "col-12"}">
         <div class="card__head">
           <div>
             <h2 class="card__title">${escapeHtml(bank.name)}</h2>
-            <p class="card__sub">سؤال ${currentIndex + 1} من ${total} - ${SECTION_LABELS[question.source]} - ${escapeHtml(
+            <p class="card__sub">سؤال ${currentIndex + 1} من ${total} · ${SECTION_LABELS[question.source]} · ${escapeHtml(
     question.classification || "بدون تصنيف"
   )}</p>
           </div>
@@ -1586,33 +1578,34 @@ function renderAttemptView() {
         </div>
 
         <div class="stack">
-          <div>
-            <p class="hint">المجاب: ${answered}/${total}</p>
-            <div class="progress"><span style="width:${progress}%;"></span></div>
+          <div class="progress-head">
+            <span class="hint">المُجاب: ${answered} / ${total}</span>
+            <span class="hint hint--accent">${progress}%</span>
           </div>
+          <div class="progress"><span style="width:${progress}%;"></span></div>
 
           <article class="question-card">
+            <div class="question-badge">س${currentIndex + 1}</div>
             <p class="question-text">${asMultiline(question.question)}</p>
             <div class="choices">
               ${question.choices
-                .map(
-                  (choice) => `
-                <button class="choice ${normalizeToken(answerKey) === normalizeToken(choice.key) ? "choice--selected" : ""}" data-action="attempt-select" data-key="${
-                    choice.key
-                  }">
+                .map((choice) => {
+                  const selected = normalizeToken(answerKey) === normalizeToken(choice.key);
+                  return `
+                <button class="choice ${selected ? "choice--selected" : ""}" data-action="attempt-select" data-key="${choice.key}">
                   <span class="choice__dot">${escapeHtml(choice.label || choice.key.toUpperCase())}</span>
-                  <span>${asMultiline(choice.text)}</span>
-                </button>
-              `
-                )
+                  <span class="choice__text">${asMultiline(choice.text)}</span>
+                  ${selected ? '<span class="choice__check">✓</span>' : ""}
+                </button>`;
+                })
                 .join("")}
             </div>
           </article>
 
-          <div class="row row--middle">
-            <button class="btn btn--secondary" data-action="attempt-prev" ${currentIndex === 0 ? "disabled" : ""}>السابق</button>
-            <button class="btn btn--secondary" data-action="attempt-next" ${currentIndex === total - 1 ? "disabled" : ""}>التالي</button>
-            <button class="btn btn--primary" data-action="attempt-submit">تسليم البنك</button>
+          <div class="solve-actions">
+            <button class="btn btn--ghost" data-action="attempt-prev" ${currentIndex === 0 ? "disabled" : ""}>← السابق</button>
+            <button class="btn btn--ghost" data-action="attempt-next" ${currentIndex === total - 1 ? "disabled" : ""}>التالي →</button>
+            <button class="btn btn--primary btn--submit" data-action="attempt-submit">تسليم البنك</button>
           </div>
         </div>
       </article>
@@ -1620,27 +1613,25 @@ function renderAttemptView() {
       ${
         hasPassage
           ? `
-      <aside class="card col-4">
-        <div class="card__head">
-          <div>
-            <h3 class="card__title">القطعة القرائية</h3>
-            <p class="card__sub">اقرأ القطعة ثم أجب عن السؤال</p>
-          </div>
+      <aside class="card passage-card col-5">
+        <div class="passage-card__head">
+          <span class="passage-tag">القطعة القرائية</span>
+          <p class="card__sub">اقرأ القطعة ثم أجب عن السؤال</p>
         </div>
-        <div class="passage-box passage-box--full">
+        <div class="passage-scroll">
           <div class="passage-text">${asMultiline(question.passage)}</div>
         </div>
       </aside>`
           : ""
       }
 
-      <aside class="card col-12">
+      <aside class="card nav-card col-12">
         <div class="card__head">
           <div>
             <h3 class="card__title">التنقل السريع</h3>
             <p class="card__sub">اختر رقم السؤال مباشرة</p>
           </div>
-          <span class="pill pill--muted">${progress}%</span>
+          <span class="pill pill--muted">${answered}/${total} مُجاب</span>
         </div>
 
         <div class="nav-grid">
@@ -1655,7 +1646,7 @@ function renderAttemptView() {
               }
 
               const label = item.source === "verbal" ? "ل" : "ك";
-              return `<button class="${classes.join(" ")}" data-action="attempt-go" data-index="${index}">${index + 1}<small style="display:block;font-size:0.6rem;">${label}</small></button>`;
+              return `<button class="${classes.join(" ")}" data-action="attempt-go" data-index="${index}"><span class="q-nav__num">${index + 1}</span><span class="q-nav__tag">${label}</span></button>`;
             })
             .join("")}
         </div>
@@ -1750,8 +1741,12 @@ function renderReviewItem(question, attempt, index) {
         <span class="pill pill--muted">${SECTION_LABELS[question.source]}</span>
         <span class="pill ${correct ? "" : "pill--warm"}">${correct ? "صحيح" : "غير صحيح"}</span>
       </div>
-      ${question.passage ? `<div class="passage-box"><p class="passage-label">القطعة القرائية</p><div class="passage-text">${asMultiline(question.passage)}</div></div>` : ""}
-      <p class="question-text">${asMultiline(question.question)}</p>
+      ${
+        question.passage
+          ? `<details class="review-passage"><summary><span class="passage-tag">القطعة القرائية</span></summary><div class="passage-text">${asMultiline(question.passage)}</div></details>`
+          : ""
+      }
+      <p class="question-text question-text--review">${asMultiline(question.question)}</p>
       <p class="hint">إجابتك: ${answerChoice ? `${escapeHtml(answerChoice.label)} - ${escapeHtml(answerChoice.text)}` : "لم تتم الإجابة"}</p>
       <p class="hint">الصحيح: ${correctChoice ? `${escapeHtml(correctChoice.label)} - ${escapeHtml(correctChoice.text)}` : "غير متوفر"}</p>
     </article>
@@ -1830,8 +1825,25 @@ function asMultiline(value) {
 }
 
 function normalizeRichText(value) {
-  const html = String(value || "").replace(/<br\s*\/?>/gi, "\n");
+  let html = String(value || "");
+  // تحويل وسوم <br> إلى أسطر
+  html = html.replace(/<br\s*\/?>/gi, "\n");
   const holder = document.createElement("div");
   holder.innerHTML = html;
-  return holder.textContent || "";
+  let text = holder.textContent || "";
+
+  // تحويل تسلسلات الأسطر الحرفية (\n و \r و \t) إلى أسطر فعلية
+  text = text
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\\t/g, " ");
+
+  // تنظيف المسافات الزائدة وتقليص الأسطر الفارغة المتتالية
+  text = text
+    .split("\n")
+    .map((line) => line.replace(/[ \t ]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text;
 }
