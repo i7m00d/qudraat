@@ -764,6 +764,16 @@ async function createBank() {
     const notes = [];
     const plan = [];
 
+    // معرّفات الأسئلة المستخدمة في كل البنوك الحالية، لمنع تكرار السؤال بين بنكين
+    const usedKeys = new Set();
+    for (const existingBank of state.db.banks) {
+      for (const q of existingBank.questions || []) {
+        if (q && q.source && q.sourceQuestionId != null) {
+          usedKeys.add(`${q.source}:${q.sourceQuestionId}`);
+        }
+      }
+    }
+
     for (const section of neededSections) {
       const target = split[section];
       if (target <= 0) {
@@ -771,7 +781,7 @@ async function createBank() {
       }
 
       let classifications = [];
-      if (distributionMode === "all" || distributionMode === "manual") {
+      if (distributionMode === "all" || distributionMode === "manual" || distributionMode === "random") {
         const catalog = await loadCatalog(section, false);
         const catalogNames = catalog.map((item) => item.name);
 
@@ -782,6 +792,9 @@ async function createBank() {
               `${SECTION_LABELS[section]}: العدد المختار (${target}) أقل من عدد الفقرات (${catalogNames.length})، سيتم التغطية على ${target} فقرات.`
             );
           }
+        } else if (distributionMode === "random") {
+          // العشوائي المتوازن: نوزّع الأسئلة على كل التصنيفات بأعداد متقاربة
+          classifications = catalogNames;
         } else {
           const selected = form.selectedClassifications[section] || [];
           classifications = selected.filter((name) => catalogNames.includes(name));
@@ -832,14 +845,18 @@ async function createBank() {
 
     const results = await Promise.all(
       plan.map(async (item) => {
-        const questions = await collectSectionQuestions(item, (current, targetValue, classification) => {
-          sectionProgress[item.section] = {
-            current,
-            total: targetValue,
-            classification,
-          };
-          syncStatus(false);
-        });
+        const questions = await collectSectionQuestions(
+          item,
+          (current, targetValue, classification) => {
+            sectionProgress[item.section] = {
+              current,
+              total: targetValue,
+              classification,
+            };
+            syncStatus(false);
+          },
+          usedKeys
+        );
         sectionProgress[item.section] = {
           current: item.target,
           total: item.target,
@@ -910,7 +927,8 @@ function buildClassificationQueue(classifications, target, mode) {
 }
 
 function buildClassificationTargets(queue, target, distributionMode) {
-  if (distributionMode === "random" || queue.length === 0) {
+  // إذا لم تتوفر تصنيفات (تعذّر تحميل الكتالوج) نرجع للعشوائي التام
+  if (queue.length === 0) {
     return [{ classification: null, target }];
   }
 
@@ -935,7 +953,7 @@ function buildClassificationTargets(queue, target, distributionMode) {
   });
 }
 
-async function collectSectionQuestions(plan, onProgress) {
+async function collectSectionQuestions(plan, onProgress, usedKeys = new Set()) {
   const { section, target, distributionMode, classifications } = plan;
   const queue = buildClassificationQueue(classifications, target, distributionMode);
 
@@ -949,7 +967,8 @@ async function collectSectionQuestions(plan, onProgress) {
   }));
 
   const selected = [];
-  const seen = new Set();
+  // نبدأ بمنع الأسئلة المستخدمة في بنوك أخرى (إضافةً لمنع التكرار داخل البنك)
+  const seen = new Set(usedKeys);
 
   for (const group of groups) {
     const cached = getCachedQuestions(section, group.classification, group.target, seen);
@@ -1057,6 +1076,30 @@ async function collectSectionQuestions(plan, onProgress) {
     let fallback = 0;
     while (selected.length < target && fallback < fallbackMax) {
       fallback += 1;
+      const rawQuestion = await fetchSingleQuestion(section, null);
+      if (!rawQuestion) {
+        continue;
+      }
+      const parsed = normalizeQuestion(rawQuestion, section);
+      if (takeQuestion(parsed, "احتياطي")) {
+        continue;
+      }
+    }
+  }
+
+  // ملاذ أخير: إذا تعذّر الاكتمال بسبب منع التكرار بين البنوك، نخفّف القيد
+  // (نسمح بأسئلة موجودة في بنوك أخرى، مع الإبقاء على منع التكرار داخل هذا البنك)
+  if (selected.length < target && usedKeys.size > 0) {
+    for (const key of usedKeys) {
+      seen.delete(key);
+    }
+    for (const question of selected) {
+      seen.add(`${section}:${question.sourceQuestionId}`);
+    }
+    const relaxMax = Math.max(30, (target - selected.length) * 14);
+    let relax = 0;
+    while (selected.length < target && relax < relaxMax) {
+      relax += 1;
       const rawQuestion = await fetchSingleQuestion(section, null);
       if (!rawQuestion) {
         continue;
