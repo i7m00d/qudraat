@@ -5,6 +5,14 @@ const QUESTION_SELECT = "id,classification,question,choices,resource,note";
 const QUESTION_CACHE_LIMIT = 360;
 const FETCH_CONCURRENCY = 6;
 const FETCH_TIMEOUT_MS = 12000;
+const LOGO_SVG = `
+  <svg class="brand__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+    <path d="M17.5 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v3" />
+    <path d="M9 12h4M9 16h2.5" />
+    <path d="M20.4 14.6a1.4 1.4 0 0 1 2 2L17 22l-2.8.8.8-2.8z" />
+  </svg>
+`;
 
 const SECTION_LABELS = {
   verbal: "لفظي",
@@ -30,7 +38,7 @@ const state = {
     quant: null,
   },
   ui: {
-    view: "home",
+    view: "landing",
     activeBankId: null,
     activeAttemptId: null,
     submitOverlay: false,
@@ -61,8 +69,110 @@ appEl.addEventListener("input", onInput);
 init();
 
 function init() {
+  ensureBankNumbers();
+  applyRouteFromUrl();
+  window.addEventListener("popstate", () => {
+    applyRouteFromUrl();
+    render();
+  });
   render();
   maybePreloadCatalogs();
+}
+
+// منح كل بنك رقمًا تسلسليًا ثابتًا (للروابط /bank/N)
+function ensureBankNumbers() {
+  let max = 0;
+  for (const bank of state.db.banks) {
+    if (Number(bank.number) > max) {
+      max = Number(bank.number);
+    }
+  }
+  let changed = false;
+  // نمنح الأرقام بترتيب الإنشاء (الأقدم أولًا)
+  const ordered = [...state.db.banks].sort((a, b) => a.createdAt - b.createdAt);
+  for (const bank of ordered) {
+    if (!Number(bank.number)) {
+      max += 1;
+      bank.number = max;
+      changed = true;
+    }
+  }
+  if (changed) {
+    persistDb();
+  }
+}
+
+function nextBankNumber() {
+  let max = 0;
+  for (const bank of state.db.banks) {
+    if (Number(bank.number) > max) {
+      max = Number(bank.number);
+    }
+  }
+  return max + 1;
+}
+
+function bankByNumber(number) {
+  return state.db.banks.find((bank) => Number(bank.number) === Number(number)) || null;
+}
+
+/* ===== التوجيه (Routing) ===== */
+function currentPath() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path || "/";
+}
+
+function pushUrl(path) {
+  const target = path || "/";
+  if (currentPath() !== target.replace(/\/+$/, "")) {
+    window.history.pushState({}, "", target);
+  }
+}
+
+// قراءة المسار من الرابط وضبط الحالة (بدون دفع سجل جديد)
+function applyRouteFromUrl() {
+  const path = currentPath();
+  const parts = path.split("/").filter(Boolean);
+
+  if (parts.length === 0) {
+    state.ui.view = "landing";
+  } else if (parts[0] === "banks") {
+    state.ui.view = "home";
+  } else if (parts[0] === "bank" && parts[1]) {
+    const bank = bankByNumber(parts[1]);
+    if (!bank) {
+      state.ui.view = "home";
+    } else if (parts[2] === "result") {
+      const completed = bank.attempts.find((a) => a.completedAt) || bank.attempts[0];
+      if (completed) {
+        state.ui.view = "result";
+        state.ui.activeBankId = bank.id;
+        state.ui.activeAttemptId = completed.id;
+      } else {
+        state.ui.view = "home";
+      }
+    } else {
+      let attempt = getLatestIncompleteAttempt(bank) || bank.attempts[0];
+      if (!attempt) {
+        attempt = {
+          id: uid("attempt"),
+          startedAt: Date.now(),
+          completedAt: null,
+          currentIndex: 0,
+          answers: {},
+          score: null,
+          durationSec: null,
+        };
+        bank.attempts.unshift(attempt);
+        persistDb();
+      }
+      state.ui.view = "attempt";
+      state.ui.activeBankId = bank.id;
+      state.ui.activeAttemptId = attempt.id;
+    }
+  } else {
+    state.ui.view = "landing";
+  }
 }
 
 function loadDb() {
@@ -108,6 +218,7 @@ function loadQuestionCache() {
 function normalizeBankRecord(bank) {
   return {
     id: String(bank.id || uid("bank")),
+    number: Number(bank.number) || 0,
     name: String(bank.name || "بنك بدون اسم"),
     createdAt: Number(bank.createdAt || Date.now()),
     config: {
@@ -275,6 +386,37 @@ function onClick(event) {
     return;
   }
 
+  if (action === "set-subject") {
+    const value = target.dataset.value;
+    if (value === "verbal" || value === "quant" || value === "mixed") {
+      state.ui.createForm.subjectMode = value;
+      state.ui.createError = "";
+      maybePreloadCatalogs();
+      render();
+    }
+    return;
+  }
+
+  if (action === "set-distribution") {
+    const value = target.dataset.value;
+    if (value === "random" || value === "all" || value === "manual") {
+      state.ui.createForm.distributionMode = value;
+      state.ui.createError = "";
+      maybePreloadCatalogs();
+      render();
+    }
+    return;
+  }
+
+  if (action === "set-count") {
+    const value = clamp(Math.floor(Number(target.dataset.value || 0)), 5, 200);
+    if (value) {
+      state.ui.createForm.questionCount = value;
+      render();
+    }
+    return;
+  }
+
   if (action === "start-new-attempt") {
     const bankId = target.dataset.bankId;
     if (!bankId) {
@@ -328,6 +470,27 @@ function onClick(event) {
     state.ui.activeBankId = null;
     state.ui.activeAttemptId = null;
     state.ui.submitOverlay = false;
+    pushUrl("/banks");
+    render();
+    return;
+  }
+
+  if (action === "start-app") {
+    state.ui.view = "home";
+    state.ui.activeBankId = null;
+    state.ui.activeAttemptId = null;
+    state.ui.submitOverlay = false;
+    pushUrl("/banks");
+    render();
+    return;
+  }
+
+  if (action === "go-landing") {
+    state.ui.view = "landing";
+    state.ui.activeBankId = null;
+    state.ui.activeAttemptId = null;
+    state.ui.submitOverlay = false;
+    pushUrl("/");
     render();
     return;
   }
@@ -473,6 +636,7 @@ function openAttempt(bankId, attemptId) {
   state.ui.activeBankId = bankId;
   state.ui.activeAttemptId = attemptId;
   state.ui.submitOverlay = false;
+  pushUrl(`/bank/${bank.number}`);
   render();
 }
 
@@ -489,6 +653,7 @@ function openResult(bankId, attemptId) {
   state.ui.activeBankId = bankId;
   state.ui.activeAttemptId = attemptId;
   state.ui.submitOverlay = false;
+  pushUrl(`/bank/${bank.number}/result`);
   render();
 }
 
@@ -878,6 +1043,7 @@ async function createBank() {
 
     const bank = {
       id: uid("bank"),
+      number: nextBankNumber(),
       name: form.name.trim() || `${SECTION_LABELS[subjectMode]} - ${count} سؤال`,
       createdAt: Date.now(),
       config: {
@@ -1322,15 +1488,20 @@ function mergeQuestions(verbalQuestions, quantQuestions, subjectMode, total) {
 }
 
 function render() {
+  if (state.ui.view === "landing") {
+    appEl.innerHTML = renderLandingView();
+    return;
+  }
+
   appEl.innerHTML = `
     <header class="topbar">
-      <div class="brand">
-        <div class="brand__badge"></div>
-        <div>
-          <h1>بنوك القدرات الذكية</h1>
-          <p>بنفس فكرة الفورمز - بنك محفوظ وتقدر تعيده أكثر من مرة</p>
-        </div>
-      </div>
+      <button class="brand brand--link" data-action="go-landing" aria-label="الصفحة الرئيسية">
+        <span class="brand__badge">${LOGO_SVG}</span>
+        <span class="brand__text">
+          <span class="brand__name">قدراتي</span>
+          <span class="brand__tag">بنك أسئلتك الخاص — أعِد الحل بلا حدود</span>
+        </span>
+      </button>
       ${state.ui.view !== "home" ? '<button class="btn btn--secondary" data-action="go-home">رجوع للبنوك</button>' : ""}
     </header>
     <main class="view">
@@ -1350,69 +1521,166 @@ function renderView() {
   return renderHomeView();
 }
 
+function renderLandingView() {
+  return `
+    <div class="landing">
+      <nav class="landing__nav">
+        <div class="brand">
+          <span class="brand__badge">${LOGO_SVG}</span>
+          <span class="brand__name">قدراتي</span>
+        </div>
+        <button class="btn btn--primary" data-action="start-app">ابدأ الآن</button>
+      </nav>
+
+      <section class="hero">
+        <span class="hero__pill">مجاني بالكامل · بدون تسجيل</span>
+        <h1 class="hero__title">درّب نفسك على القدرات<br />على طريقتك أنت</h1>
+        <p class="hero__sub">
+          أنشئ بنك أسئلتك الخاص من قسم اللفظي أو الكمي، حدّد العدد والتوزيع،
+          واحفظه ليبقى معك تعيد حلّه متى ما أردت. كل أداة تحتاجها للمراجعة في مكان واحد.
+        </p>
+        <div class="hero__actions">
+          <button class="btn btn--primary btn--lg" data-action="start-app">ابدأ التدريب الآن</button>
+        </div>
+        <p class="hero__made">✦ صُنع من طالب إلى طلاب</p>
+      </section>
+
+      <section class="features">
+        <article class="feature">
+          <div class="feature__icon">🗂️</div>
+          <h3>بنوك ثابتة قابلة للإعادة</h3>
+          <p>كوّن بنكك مرة واحدة، واحفظه لتعيد حلّه بلا حدود وتتابع تقدّمك.</p>
+        </article>
+        <article class="feature">
+          <div class="feature__icon">🎯</div>
+          <h3>توزيع متوازن وذكي</h3>
+          <p>وزّع الأسئلة عشوائيًا أو بالتساوي على كل التصنيفات، وبدون تكرار بين بنوكك.</p>
+        </article>
+        <article class="feature">
+          <div class="feature__icon">📖</div>
+          <h3>القطعة بجانب السؤال</h3>
+          <p>اقرأ قطعة الاستيعاب المقروء بجوار السؤال مباشرة لتجربة حلّ مريحة.</p>
+        </article>
+        <article class="feature feature--privacy">
+          <div class="feature__icon">🔒</div>
+          <h3>لا نجمع أي بيانات</h3>
+          <p>لا حسابات ولا تتبّع. كل شيء يُحفظ داخل جهازك فقط، ولا يخرج منه أبدًا.</p>
+        </article>
+      </section>
+
+      <section class="cta">
+        <h2>جاهز تبدأ؟</h2>
+        <p>أنشئ أول بنك أسئلة الآن — ما يحتاج سوى ضغطة.</p>
+        <button class="btn btn--primary btn--lg" data-action="start-app">ابدأ الآن</button>
+      </section>
+
+      <footer class="landing__foot">
+        <span>قدراتي</span>
+        <span>صُنع من طالب إلى طلاب · بدون جمع أي بيانات</span>
+      </footer>
+    </div>
+  `;
+}
+
 function renderHomeView() {
+  const form = state.ui.createForm;
+  const subjectOptions = [
+    { value: "verbal", label: "لفظي", desc: "تناظر، استيعاب، إكمال" },
+    { value: "quant", label: "كمي", desc: "حساب، هندسة، تحليل" },
+    { value: "mixed", label: "الكل", desc: "لفظي + كمي معًا" },
+  ];
+  const distOptions = [
+    { value: "random", label: "عشوائي متوازن", desc: "أسئلة موزّعة على كل التصنيفات بالتساوي" },
+    { value: "all", label: "تغطية شاملة", desc: "سؤال من كل تصنيف متاح" },
+    { value: "manual", label: "تحديد يدوي", desc: "اختر التصنيفات التي تريدها بنفسك" },
+  ];
+  const quickCounts = [10, 20, 30, 50];
+
   return `
     <section class="grid">
-      <article class="card col-4">
+      <article class="card col-5 create-card">
         <div class="card__head">
           <div>
             <h2 class="card__title">إنشاء بنك جديد</h2>
-            <p class="card__sub">حدد القسم، العدد، ونمط توزيع الفقرات</p>
+            <p class="card__sub">جهّز بنك أسئلتك في ثلاث خطوات بسيطة</p>
           </div>
-          <span class="pill">ثابت + قابل للإعادة</span>
         </div>
-        <div class="stack">
-          <div class="field">
-            <label for="bankName">اسم البنك (اختياري)</label>
-            <input id="bankName" type="text" value="${escapeAttr(state.ui.createForm.name)}" placeholder="مثال: بنك لفظي - التناظر" />
-          </div>
 
-          <div class="field">
-            <label for="subjectMode">نوع الأسئلة</label>
-            <select id="subjectMode">
-              <option value="verbal" ${state.ui.createForm.subjectMode === "verbal" ? "selected" : ""}>لفظي</option>
-              <option value="quant" ${state.ui.createForm.subjectMode === "quant" ? "selected" : ""}>كمي</option>
-              <option value="mixed" ${state.ui.createForm.subjectMode === "mixed" ? "selected" : ""}>كلهم (لفظي + كمي)</option>
-            </select>
-          </div>
-
-          ${
-            state.ui.createForm.subjectMode === "mixed"
-              ? `
-            <div class="field">
-              <label for="verbalRatio">نسبة اللفظي داخل البنك (%)</label>
-              <input id="verbalRatio" type="number" min="0" max="100" value="${state.ui.createForm.verbalRatio}" />
-              <p class="hint">التقسيم الحالي: ${renderSplitHint()}</p>
+        <div class="stack create-form">
+          <div class="form-group">
+            <span class="form-group__step">1</span>
+            <div class="form-group__body">
+              <label class="form-group__label" for="bankName">اسم البنك <span class="muted-inline">(اختياري)</span></label>
+              <input id="bankName" type="text" value="${escapeAttr(form.name)}" placeholder="مثال: لفظي - التناظر" />
             </div>
-          `
-              : ""
-          }
-
-          <div class="field">
-            <label for="questionCount">عدد الأسئلة</label>
-            <input id="questionCount" type="number" min="5" max="200" value="${state.ui.createForm.questionCount}" />
-            <p class="hint">الحد الأدنى 5 والحد الأعلى 200</p>
           </div>
 
-          <div class="field">
-            <label for="distributionMode">طريقة اختيار الفقرات</label>
-            <select id="distributionMode">
-              <option value="random" ${state.ui.createForm.distributionMode === "random" ? "selected" : ""}>عشوائي</option>
-              <option value="all" ${state.ui.createForm.distributionMode === "all" ? "selected" : ""}>كل الفقرات</option>
-              <option value="manual" ${state.ui.createForm.distributionMode === "manual" ? "selected" : ""}>تحديد يدوي أدق</option>
-            </select>
+          <div class="form-group">
+            <span class="form-group__step">2</span>
+            <div class="form-group__body">
+              <span class="form-group__label">نوع الأسئلة</span>
+              <div class="choice-cards">
+                ${subjectOptions
+                  .map(
+                    (opt) => `
+                  <button class="choice-card ${form.subjectMode === opt.value ? "choice-card--active" : ""}" data-action="set-subject" data-value="${opt.value}">
+                    <span class="choice-card__label">${opt.label}</span>
+                    <span class="choice-card__desc">${opt.desc}</span>
+                  </button>`
+                  )
+                  .join("")}
+              </div>
+              ${
+                form.subjectMode === "mixed"
+                  ? `<div class="field field--inset">
+                      <label for="verbalRatio">نسبة اللفظي (%)</label>
+                      <input id="verbalRatio" type="number" min="0" max="100" value="${form.verbalRatio}" />
+                      <p class="hint">التقسيم الحالي: ${renderSplitHint()}</p>
+                    </div>`
+                  : ""
+              }
+            </div>
           </div>
 
-          ${renderClassificationControls()}
-
-          <div class="row row--middle">
-            <button class="btn btn--primary" data-action="create-bank" ${state.ui.createBusy ? "disabled" : ""}>${
-              state.ui.createBusy ? "جاري الإنشاء..." : "إنشاء البنك"
-            }</button>
-            <button class="btn btn--ghost" data-action="refresh-catalog" data-section="all" ${
-              state.ui.createBusy ? "disabled" : ""
-            }>تحديث الفقرات</button>
+          <div class="form-group">
+            <span class="form-group__step">3</span>
+            <div class="form-group__body">
+              <label class="form-group__label" for="questionCount">عدد الأسئلة</label>
+              <input id="questionCount" type="number" min="5" max="200" value="${form.questionCount}" />
+              <div class="quick-counts">
+                ${quickCounts
+                  .map(
+                    (n) => `<button class="quick-chip ${Number(form.questionCount) === n ? "quick-chip--active" : ""}" data-action="set-count" data-value="${n}">${n}</button>`
+                  )
+                  .join("")}
+              </div>
+            </div>
           </div>
+
+          <div class="form-group">
+            <div class="form-group__body">
+              <span class="form-group__label">طريقة اختيار الفقرات</span>
+              <div class="choice-cards choice-cards--stack">
+                ${distOptions
+                  .map(
+                    (opt) => `
+                  <button class="choice-card choice-card--wide ${form.distributionMode === opt.value ? "choice-card--active" : ""}" data-action="set-distribution" data-value="${opt.value}">
+                    <span class="choice-card__label">${opt.label}</span>
+                    <span class="choice-card__desc">${opt.desc}</span>
+                  </button>`
+                  )
+                  .join("")}
+              </div>
+              ${renderClassificationControls()}
+            </div>
+          </div>
+
+          <button class="btn btn--primary btn--block btn--lg" data-action="create-bank" ${state.ui.createBusy ? "disabled" : ""}>${
+            state.ui.createBusy ? "جاري الإنشاء..." : "إنشاء البنك"
+          }</button>
+          <button class="btn btn--ghost btn--block" data-action="refresh-catalog" data-section="all" ${
+            state.ui.createBusy ? "disabled" : ""
+          }>تحديث قائمة الفقرات</button>
 
           ${
             state.ui.createStatus
@@ -1424,13 +1692,13 @@ function renderHomeView() {
         </div>
       </article>
 
-      <article class="card col-8">
+      <article class="card col-7">
         <div class="card__head">
           <div>
-            <h2 class="card__title">البنوك المحفوظة</h2>
+            <h2 class="card__title">بنوكك المحفوظة</h2>
             <p class="card__sub">كل بنك ثابت، وتقدر تبدأ له محاولات جديدة بأي وقت</p>
           </div>
-          <span class="pill pill--warm">${state.db.banks.length} بنك</span>
+          <span class="pill pill--muted">${state.db.banks.length} بنك</span>
         </div>
         ${renderBankList()}
       </article>
